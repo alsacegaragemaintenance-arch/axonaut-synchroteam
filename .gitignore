@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Env & secrets
+.env
+.env.*
+*.save
+
+# Node
+node_modules
+
+# Logs & cache
+logs.json
+*-log.json
+*-cache.json
+.env
+node_modules
+
