@@ -13,6 +13,7 @@ const axios = require('axios');
 // FICHIERS
 // -------------------------
 const PRODUCTS_CACHE_FILE = path.join(__dirname, 'products-cache.json');
+const PRODUCTS_DIFF_LOG_FILE = path.join(__dirname, 'products-diff-log.json');
 
 // -------------------------
 // CONFIG AXONAUT
@@ -35,6 +36,31 @@ if (fs.existsSync(PRODUCTS_CACHE_FILE)) {
     if (Array.isArray(raw)) productsCache = raw;
   } catch (_) {}
 }
+
+
+// -------------------------
+// LOG DIFF PRODUITS (A1)
+// -------------------------
+function appendProductDiffLog(entry) {
+  let logs = [];
+
+  if (fs.existsSync(PRODUCTS_DIFF_LOG_FILE)) {
+    try {
+      logs = JSON.parse(fs.readFileSync(PRODUCTS_DIFF_LOG_FILE, 'utf8'));
+      if (!Array.isArray(logs)) logs = [];
+    } catch (_) {
+      logs = [];
+    }
+  }
+
+  logs.push(entry);
+
+  fs.writeFileSync(
+    PRODUCTS_DIFF_LOG_FILE,
+    JSON.stringify(logs, null, 2)
+  );
+}
+
 
 // -------------------------
 // AXIOS CLIENT MINIMAL
@@ -98,8 +124,49 @@ async function fetchAllProductsFromAxonaut() {
 async function syncProducts() {
   console.log('DEBUG → syncProducts appelée');
 
+  // 🔹 SNAPSHOT AVANT
+  const beforeProducts = Array.isArray(productsCache)
+    ? JSON.parse(JSON.stringify(productsCache))
+    : [];
+
   const products = await fetchAllProductsFromAxonaut();
 
+  // 🔹 COMPARAISON PRODUITS
+  const beforeMap = new Map(
+    beforeProducts.map(p => [String(p.id), p])
+  );
+
+  for (const p of products) {
+    const before = beforeMap.get(String(p.id));
+
+    // 🆕 PRODUIT CRÉÉ
+    if (!before) {
+      appendProductDiffLog({
+        timestamp: new Date().toISOString(),
+        action: 'created',
+        before: null,
+        after: p
+      });
+      continue;
+    }
+
+    // ✏️ PRODUIT MODIFIÉ
+    const changed =
+      before.name !== p.name ||
+      before.reference !== p.reference ||
+      before.price !== p.price;
+
+    if (changed) {
+      appendProductDiffLog({
+        timestamp: new Date().toISOString(),
+        action: 'updated',
+        before,
+        after: p
+      });
+    }
+  }
+
+  // 🔹 CACHE & FICHIER (EXISTANT, INCHANGÉ)
   productsCache = products;
   fs.writeFileSync(PRODUCTS_CACHE_FILE, JSON.stringify(productsCache, null, 2));
 

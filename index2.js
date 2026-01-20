@@ -320,7 +320,7 @@ async function retryCustomer(customerData){
 async function getCustomerFromAxonaut(customerId) {
   try {
     const res = await axios.get(
-      `https://api.axonaut.com/api/v2/companies/${customerId}`,
+      `https://app.axonaut.com/api/v2/companies/${customerId}`,
       {
         headers: {
           userApiKey: process.env.AXO_API_KEY,
@@ -345,30 +345,58 @@ async function processCustomer(customer, options = {}) {
   if(!customer.myId) return;  // 🔹 ignorer clients sans ID
 
 
-  // 🔹 RECHARGE CLIENT COMPLET POUR UNE CRÉATION
+// 🔹 RECHARGE CLIENT COMPLET POUR UNE CRÉATION
 if (options.forceCreated === true) {
   try {
-    // ⚠️ on appelle Axonaut avec l'ID numérique, pas internal_id
-    const fullCompany = await getCustomerFromAxonaut(customer.axoId);
+    // On tente plusieurs fois car Axonaut peut créer la société avant de créer le contact (employees)
+    for (let attempt = 1; attempt <= 3; attempt++) {
 
-    if (fullCompany) {
-      // ✅ on ENRICHIT le customer Synchroteam (on ne remplace pas tout)
-      customer.name = fullCompany.name || customer.name;
+      const fullCompany = await getCustomerFromAxonaut(customer.axoId);
 
-      customer.address = fullCompany.address_street || customer.address || '';
-      customer.addressZIP = fullCompany.address_zip_code || customer.addressZIP || '';
-      customer.addressCity = fullCompany.address_city || customer.addressCity || '';
+      if (fullCompany) {
+        // Adresse (company)
+        customer.address = fullCompany.address_street || customer.address || '';
+        customer.address2 = fullCompany.address_complement || customer.address2 || '';
+        customer.addressZIP = fullCompany.address_zip_code || customer.addressZIP || '';
+        customer.addressCity = fullCompany.address_city || customer.addressCity || '';
 
-      // selon ce que renvoie Axonaut, parfois address_complement existe, parfois non
-      customer.address2 = fullCompany.address_complement || fullCompany.address_complement2 || customer.address2 || '';
+        // Contact (souvent dans employees[0])
+        const fullContact = (fullCompany.employees && fullCompany.employees[0]) || null;
 
-      // Contact (si Axonaut renvoie une liste)
-      const contact = (fullCompany.employees && fullCompany.employees[0]) ? fullCompany.employees[0] : null;
+        customer.contactEmail = fullContact?.email || customer.contactEmail || '';
+        customer.contactPhone = fullContact?.phone_number || customer.contactPhone || '';
+        customer.contactMobile = fullContact?.cellphone_number || customer.contactMobile || '';
+      }
 
-      customer.contactEmail = contact?.email || customer.contactEmail || '';
-      customer.contactPhone = contact?.phone_number || customer.contactPhone || '';
-      customer.contactMobile = contact?.cellphone_number || customer.contactMobile || '';
+      // Si on a récupéré au moins une info utile, on sort
+      const hasUseful =
+        (customer.address && customer.address.trim() !== '') ||
+        (customer.addressZIP && customer.addressZIP.trim() !== '') ||
+        (customer.addressCity && customer.addressCity.trim() !== '') ||
+        (customer.contactEmail && customer.contactEmail.trim() !== '') ||
+        (customer.contactPhone && customer.contactPhone.trim() !== '') ||
+        (customer.contactMobile && customer.contactMobile.trim() !== '');
+
+      if (hasUseful) break;
+
+      // sinon on attend un peu et on retente
+      await new Promise(r => setTimeout(r, 1500));
     }
+
+    console.log(
+      '🧪 CREATED après enrich Axonaut:',
+      customer.name,
+      '| addr:',
+      customer.address,
+      customer.addressZIP,
+      customer.addressCity,
+      '| mail:',
+      customer.contactEmail,
+      '| tel:',
+      customer.contactPhone,
+      '| mob:',
+      customer.contactMobile
+    );
 
   } catch (e) {
     console.error('❌ Erreur récupération client Axonaut complet:', e.message);
@@ -379,7 +407,7 @@ if (options.forceCreated === true) {
   const errorEntry=errorQueue.find(e=>e.myId===customer.myId && e.stopped);
   if(errorEntry){ console.log(`⚠️ Client ${customer.name} ignoré car erreur après 3 tentatives`); return; }
 
-if (options.forceCreated === true || hasChanged(oldClient, customer)) {
+  if (options.forceCreated === true || hasChanged(oldClient, customer)) {
     const result=await createOrUpdateCustomer(customer);
     const dashboardEntry={
       before:oldClient?{...oldClient}:null,
@@ -388,12 +416,15 @@ if (options.forceCreated === true || hasChanged(oldClient, customer)) {
       timestamp:new Date().toISOString(),
       error:result.error
     };
+
     // 🔹 Forcer une vraie création visuelle (company.created)
-if (options.forceCreated === true) {
-  dashboardEntry.before = null;
-  dashboardEntry.action = 'created';
-}
+    if (options.forceCreated === true) {
+      dashboardEntry.before = null;
+      dashboardEntry.action = 'created';
+    }
+
     logSync(dashboardEntry);
+
     if(result.action==='error') await handleError(result,customer);
     else{
       clientCache[customer.myId]={...customer};
@@ -414,7 +445,7 @@ async function syncAllClientsOptimized(){
   if(hour<7 || hour>=20){ console.log('⏱ Hors tranche horaire, synchro suspendue'); syncInProgress=false; return; }
 
   try{
-const axoUrl='https://api.axonaut.com/api/v2/companies';
+const axoUrl='https://app.axonaut.com/api/v2/companies';
     const axoHeaders={ 'userApiKey':process.env.AXO_API_KEY,'Accept':'application/json' };
     let page=1;
     while(true){
@@ -730,7 +761,7 @@ const tableRows = rows.map(r => {
 
 <td style="text-align:center;">
   <a
-href="https://api.axonaut.com/quotes/new${r.axonautClientId ? `?client_id=${r.axonautClientId}&title=${encodeURIComponent(devisTitle)}` : `?title=${encodeURIComponent(devisTitle)}`}"
+href="https://app.axonaut.com/quotes/new${r.axonautClientId ? `?client_id=${r.axonautClientId}&title=${encodeURIComponent(devisTitle)}` : `?title=${encodeURIComponent(devisTitle)}`}"
     target="_blank"
     title="Créer un devis dans Axonaut"
     style="
@@ -946,7 +977,7 @@ async function syncSingleClientFromAxonaut(axonautClientId) {
     // 1. Récupération client Axonaut (UN SEUL APPEL → quota safe)
     // -------------------------
     const axoRes = await axios.get(
-      `https://api.axonaut.com/api/v2/customers/${axonautClientId}`,
+      `https://app.axonaut.com/api/v2/customers/${axonautClientId}`,
       {
         headers: {
           Authorization: `Bearer ${process.env.AXONAUT_API_KEY}`
